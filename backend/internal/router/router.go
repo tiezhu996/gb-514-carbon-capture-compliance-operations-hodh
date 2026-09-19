@@ -33,7 +33,7 @@ func New(cfg config.Config, db *gorm.DB, redisClient *redis.Client, logger *slog
 	emissionSampleRepository := repository.NewEmissionSampleRepository(db)
 	complianceDecisionRepository := repository.NewComplianceDecisionRepository(db)
 	captureUnitService := service.NewCaptureUnitService(captureUnitRepository, securityService)
-	permitRuleService := service.NewPermitRuleService(permitRuleRepository, securityService)
+	permitRuleService := service.NewPermitRuleService(permitRuleRepository, complianceDecisionRepository, emissionSampleRepository, captureUnitRepository, securityService)
 	emissionSampleService := service.NewEmissionSampleService(emissionSampleRepository, securityService)
 	complianceDecisionService := service.NewComplianceDecisionService(complianceDecisionRepository, securityService)
 	captureUnitHandler := handler.NewCaptureUnitHandler(captureUnitService)

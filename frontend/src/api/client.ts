@@ -26,6 +26,10 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   const response = await fetch(`/api${path}`, { ...init, headers });
   if (response.status === 204) return { data: undefined as T };
   const payload = await response.json().catch(() => ({ error: 'invalid_response', message: '服务返回了无法解析的响应' }));
-  if (!response.ok) throw new Error(payload.message || payload.error || `HTTP ${response.status}`);
+  if (!response.ok) {
+    const error = new Error(payload.message || payload.error || `HTTP ${response.status}`) as Error & { payload?: unknown };
+    error.payload = payload;
+    throw error;
+  }
   return payload as ApiEnvelope<T>;
 }

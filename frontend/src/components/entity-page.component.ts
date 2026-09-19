@@ -3,9 +3,10 @@ import { ChangeDetectorRef, Component, Input, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatInputModule } from '@angular/material/input';
+import { checkPermitRuleRetire, retirePermitRule } from '../api/permit-rule';
 import { authState } from '../hooks/use-auth';
 import type { EntityStore } from '../stores/factory';
-import type { DomainRecord, EntityConfig } from '../types/domain';
+import type { DomainRecord, EntityConfig, RetireBlocker, RuleRetireCheck } from '../types/domain';
 import { formatDate, nextStatus } from '../utils/format';
 import { ConfirmDialogComponent } from './common/confirm-dialog.component';
 import { ComplianceBadgeComponent } from './common/compliance-badge.component';
@@ -41,11 +42,22 @@ import { StatusBadgeComponent } from './common/status-badge.component';
       <tbody><tr *ngFor="let item of state.items"><td><strong>{{ item.code }}</strong></td><td>{{ item.name }}<small>{{ item.facility }}</small></td><td><app-status-badge [status]="item.status"/></td><td>{{ item.riskLevel }}</td><td>{{ item.owner }}</td><td>{{ item.metricValue }} {{ item.metricUnit }}</td><td>{{ formatDate(item.updatedAt) }}</td><td>
         <button *ngIf="canTransition(item)" class="table-action" (click)="openTransition(item, next(item)!)">推进至 {{ next(item) }}</button>
         <span *ngIf="!canTransition(item)" class="muted">{{ actionHint(item) }}</span>
+        <button *ngIf="config.path === 'rules'" class="table-action" (click)="openRetireCheck(item)">作废核验</button>
       </td></tr><tr *ngIf="!state.items.length && !state.loading"><td colspan="8" class="empty">暂无记录</td></tr></tbody></table>
       <div *ngIf="state.loading" class="loading">正在同步业务数据…</div>
     </section>
     <app-confirm-dialog [open]="showCreate" [title]="'新增' + config.label" (cancel)="closeCreate()" (confirm)="createDemo()"><p>将创建一条包含完整责任人、风险和证据信息的演示记录。</p></app-confirm-dialog>
     <app-confirm-dialog [open]="!!pending" title="确认状态迁移" (cancel)="closeTransition()" (confirm)="confirmTransition()"><p>状态迁移会追加不可变版本并记录证据、操作者与请求 ID。</p><strong>{{ pending?.item?.status }} → {{ pending?.status }}</strong></app-confirm-dialog>
+    <app-confirm-dialog [open]="!!retireReview" [title]="'作废核验 · ' + (retireReview?.item?.code || '')" [showConfirm]="!!retireReview?.check?.allowed && canAdmin()" (cancel)="closeRetireCheck()" (confirm)="confirmRetire()">
+      <ng-container *ngIf="retireReview as review">
+        <p>按装置核验在途合规决定与最新已核验样本；作废后旧规则保留历史，已接受决定继续引用原版本。</p>
+        <ul *ngIf="review.check.blockers.length; else retireClear">
+          <li *ngFor="let blocker of review.check.blockers"><strong>{{ blocker.decisionCode || '装置/样本' }}</strong> — {{ blocker.reason }}</li>
+        </ul>
+        <ng-template #retireClear><p>无阻断：无在途决定，最新已核验样本与装置一致。</p></ng-template>
+        <p *ngIf="review.check.allowed && !canAdmin()" class="muted">核验通过，仅管理员可执行作废。</p>
+      </ng-container>
+    </app-confirm-dialog>
   </main>`,
 })
 export class EntityPageComponent implements OnInit {
@@ -54,6 +66,7 @@ export class EntityPageComponent implements OnInit {
   search = '';
   showCreate = false;
   pending: { item: DomainRecord; status: string } | null = null;
+  retireReview: { item: DomainRecord; check: RuleRetireCheck } | null = null;
   readonly formatDate = formatDate;
 
   constructor(private readonly changeDetector: ChangeDetectorRef) {}
@@ -61,6 +74,7 @@ export class EntityPageComponent implements OnInit {
   next(item: DomainRecord) { return nextStatus(item.status, this.config.statuses); }
   canWrite() { return authState.hasMinimumRole('operator'); }
   canReview() { return authState.hasMinimumRole('reviewer'); }
+  canAdmin() { return authState.hasMinimumRole('admin'); }
   canTransition(item: DomainRecord): boolean {
     const target = this.next(item);
     if (!target || !this.canWrite()) return false;
@@ -104,6 +118,26 @@ export class EntityPageComponent implements OnInit {
       this.pending = null;
     } catch { /* Store exposes the request error in its observable state. */ }
     finally { this.changeDetector.detectChanges(); }
+  }
+  async openRetireCheck(item: DomainRecord) {
+    try {
+      const result = await checkPermitRuleRetire(item.id);
+      this.retireReview = { item, check: result.data };
+    } catch { /* Store exposes the request error in its observable state. */ }
+    finally { this.changeDetector.detectChanges(); }
+  }
+  closeRetireCheck() { this.retireReview = null; this.changeDetector.detectChanges(); }
+  async confirmRetire() {
+    const review = this.retireReview;
+    if (!review || !review.check.allowed || !this.canAdmin()) return;
+    try {
+      await retirePermitRule(review.item.id, review.item.version, '规则页管理员确认作废');
+      this.retireReview = null;
+      await this.store.load(this.config.path);
+    } catch (error) {
+      const blockers = (error as { payload?: { data?: { blockers?: RetireBlocker[] } } })?.payload?.data?.blockers;
+      if (blockers?.length) this.retireReview = { item: review.item, check: { ...review.check, allowed: false, blockers } };
+    } finally { this.changeDetector.detectChanges(); }
   }
   private async load(search = '') { await this.store.load(this.config.path, search); this.changeDetector.detectChanges(); }
 }

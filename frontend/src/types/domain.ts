@@ -34,6 +34,8 @@ export interface DecisionRevision {
 
 export interface PageMeta { page: number; pageSize: number; total: number }
 export interface ApiEnvelope<T> { data: T; error?: string; message?: string; meta?: PageMeta }
+export interface RetireBlocker { decisionCode?: string; reason: string }
+export interface RuleRetireCheck { ruleId: number; ruleCode: string; allowed: boolean; blockers: RetireBlocker[]; checkedAt: string }
 export interface UserSession { token: string; username: string; displayName: string; role: string; expiresIn: number }
 export interface AuditLog {
   id: number; requestId: string; actor: string; action: string; entityType: string;

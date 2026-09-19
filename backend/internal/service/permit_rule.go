@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/blueship581/carbon-capture-compliance-operations/backend/internal/dto"
 	"github.com/blueship581/carbon-capture-compliance-operations/backend/internal/model"
 	"github.com/blueship581/carbon-capture-compliance-operations/backend/internal/repository"
+	"gorm.io/gorm"
 )
 
 type PermitRuleService interface {
@@ -20,15 +22,20 @@ type PermitRuleService interface {
 	Transition(context.Context, uint, dto.TransitionRequest, string, string) (model.PermitRule, error)
 	Delete(context.Context, uint, string, string) error
 	StatusCounts(context.Context) (map[string]int64, error)
+	RetireCheck(context.Context, uint) (dto.RuleRetireCheck, error)
+	Retire(context.Context, uint, dto.RetirePermitRule, string, string, string) (model.PermitRule, error)
 }
 
 type permitRuleService struct {
 	repository repository.PermitRuleRepository
+	decisions  repository.ComplianceDecisionRepository
+	samples    repository.EmissionSampleRepository
+	units      repository.CaptureUnitRepository
 	security   SecurityService
 }
 
-func NewPermitRuleService(repo repository.PermitRuleRepository, security SecurityService) PermitRuleService {
-	return &permitRuleService{repository: repo, security: security}
+func NewPermitRuleService(repo repository.PermitRuleRepository, decisions repository.ComplianceDecisionRepository, samples repository.EmissionSampleRepository, units repository.CaptureUnitRepository, security SecurityService) PermitRuleService {
+	return &permitRuleService{repository: repo, decisions: decisions, samples: samples, units: units, security: security}
 }
 
 func (s *permitRuleService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.PermitRule], error) {
@@ -124,6 +131,106 @@ func (s *permitRuleService) Delete(ctx context.Context, id uint, actor, requestI
 
 func (s *permitRuleService) StatusCounts(ctx context.Context) (map[string]int64, error) {
 	return s.repository.CountByStatus(ctx)
+}
+
+// RetireCheck runs the per-unit verification without writing anything so the
+// rule page can list blocking decision codes and reasons up front.
+func (s *permitRuleService) RetireCheck(ctx context.Context, id uint) (dto.RuleRetireCheck, error) {
+	blockers := make([]dto.RetireBlocker, 0)
+	rule, err := s.repository.InspectForRetire(ctx, id, func(tx *gorm.DB, locked model.PermitRule) error {
+		found, verifyErr := s.collectRetireBlockers(ctx, tx, locked)
+		if verifyErr != nil {
+			return verifyErr
+		}
+		blockers = found
+		return nil
+	})
+	if err != nil {
+		return dto.RuleRetireCheck{}, err
+	}
+	return dto.RuleRetireCheck{
+		RuleID: rule.ID, RuleCode: rule.Code, Allowed: len(blockers) == 0,
+		Blockers: blockers, CheckedAt: time.Now().UTC(),
+	}, nil
+}
+
+// Retire voids a permit rule. Only admins may retire, the per-unit
+// verification must pass inside the same transaction that flips the status,
+// and the rule row is kept (status retired) so history and accepted decisions
+// keep referencing the original version.
+func (s *permitRuleService) Retire(ctx context.Context, id uint, input dto.RetirePermitRule, actor, role, requestID string) (model.PermitRule, error) {
+	if role != model.RoleAdmin {
+		return model.PermitRule{}, ErrAdminRequired
+	}
+	before := ""
+	retired, err := s.repository.Retire(ctx, id, input.ExpectedVersion, func(tx *gorm.DB, locked model.PermitRule) error {
+		if !constants.CanTransition(constants.PermitRuleTransitions, locked.Status, "retired") {
+			return fmt.Errorf("%w: %s -> retired", ErrInvalidTransition, locked.Status)
+		}
+		before = locked.Status
+		blockers, verifyErr := s.collectRetireBlockers(ctx, tx, locked)
+		if verifyErr != nil {
+			return verifyErr
+		}
+		if len(blockers) > 0 {
+			return &RetireBlockedError{Blockers: blockers}
+		}
+		return nil
+	})
+	if err != nil {
+		return model.PermitRule{}, err
+	}
+	if err := s.security.Audit(ctx, actor, requestID, "retire", "PermitRule", id, before, "retired", input.Reason); err != nil {
+		return model.PermitRule{}, fmt.Errorf("persist retire audit: %w", err)
+	}
+	return retired, nil
+}
+
+// collectRetireBlockers verifies, scoped to the rule's capture unit, the
+// in-flight compliance decisions and the latest verified sample. Missing
+// samples, unit mismatches and read failures all become blockers; the caller
+// refuses the retire whenever the list is non-empty.
+func (s *permitRuleService) collectRetireBlockers(ctx context.Context, tx *gorm.DB, rule model.PermitRule) ([]dto.RetireBlocker, error) {
+	blockers := make([]dto.RetireBlocker, 0)
+	if !constants.CanTransition(constants.PermitRuleTransitions, rule.Status, "retired") {
+		blockers = append(blockers, dto.RetireBlocker{Reason: fmt.Sprintf("当前状态 %s 不允许作废", rule.Status)})
+	}
+	inFlight, err := s.decisions.InFlightByRuleRef(ctx, tx, rule.Code, rule.RelatedCode)
+	if err != nil {
+		return nil, fmt.Errorf("read in-flight 合规决定: %w", err)
+	}
+	for _, decision := range inFlight {
+		blockers = append(blockers, dto.RetireBlocker{
+			DecisionCode: decision.Code,
+			Reason:       fmt.Sprintf("存在%s的关联决定", inFlightStateLabel(decision.Status)),
+		})
+	}
+	unit, unitErr := s.units.GetByRelatedCode(ctx, tx, rule.RelatedCode)
+	switch {
+	case errors.Is(unitErr, gorm.ErrRecordNotFound):
+		blockers = append(blockers, dto.RetireBlocker{Reason: "关联捕集装置缺失"})
+	case unitErr != nil:
+		blockers = append(blockers, dto.RetireBlocker{Reason: "捕集装置读取失败"})
+	}
+	sample, sampleErr := s.samples.LatestVerifiedByRelatedCode(ctx, tx, rule.RelatedCode)
+	switch {
+	case errors.Is(sampleErr, gorm.ErrRecordNotFound):
+		blockers = append(blockers, dto.RetireBlocker{Reason: "最新已核验样本缺失"})
+	case sampleErr != nil:
+		blockers = append(blockers, dto.RetireBlocker{Reason: "最新已核验样本读取失败"})
+	case unit.ID != 0 && sample.Facility != unit.Facility:
+		blockers = append(blockers, dto.RetireBlocker{
+			Reason: fmt.Sprintf("样本装置不一致: 样本 %s 属于 %s, 装置属于 %s", sample.Code, sample.Facility, unit.Facility),
+		})
+	}
+	return blockers, nil
+}
+
+func inFlightStateLabel(status string) string {
+	if status == string(constants.DecisionStateReview) {
+		return "复核中"
+	}
+	return "草稿"
 }
 
 func validatePermitRuleBusinessFields(code, name, facility, owner string) error {

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"strings"
 
 	"github.com/blueship581/carbon-capture-compliance-operations/backend/internal/dto"
 	"github.com/blueship581/carbon-capture-compliance-operations/backend/internal/model"
@@ -16,6 +17,7 @@ type CaptureUnitRepository interface {
 	Update(context.Context, uint, uint, *model.CaptureUnit) error
 	Delete(context.Context, uint) error
 	CountByStatus(context.Context) (map[string]int64, error)
+	GetByRelatedCode(context.Context, *gorm.DB, string) (model.CaptureUnit, error)
 }
 
 type captureUnitRepository struct {
@@ -43,4 +45,14 @@ func (r *captureUnitRepository) Delete(ctx context.Context, id uint) error {
 }
 func (r *captureUnitRepository) CountByStatus(ctx context.Context) (map[string]int64, error) {
 	return r.store.CountByStatus(ctx)
+}
+
+// GetByRelatedCode resolves the capture unit behind a unit relation code on
+// the caller's transaction, anchoring the per-unit retire verification.
+func (r *captureUnitRepository) GetByRelatedCode(ctx context.Context, tx *gorm.DB, relatedCode string) (model.CaptureUnit, error) {
+	var unit model.CaptureUnit
+	err := tx.WithContext(ctx).
+		Where("related_code = ?", strings.TrimSpace(relatedCode)).
+		Order("id ASC").First(&unit).Error
+	return unit, err
 }

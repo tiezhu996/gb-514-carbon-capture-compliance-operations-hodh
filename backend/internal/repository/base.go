@@ -7,9 +7,21 @@ import (
 
 	"github.com/blueship581/carbon-capture-compliance-operations/backend/internal/dto"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ErrVersionConflict = errors.New("record was changed by another request")
+
+// lockRow applies SELECT ... FOR UPDATE on engines with row locking so a
+// permit rule retire and a concurrent decision submission serialize on the
+// same rule row. SQLite serializes writers at the database level, so the
+// clause is skipped there (it would be a syntax error).
+func lockRow(db *gorm.DB) *gorm.DB {
+	if db.Dialector.Name() == "sqlite" {
+		return db
+	}
+	return db.Clauses(clause.Locking{Strength: "UPDATE"})
+}
 
 type Page[T any] struct {
 	Items    []T   `json:"items"`

@@ -19,7 +19,7 @@ func TestComplianceDecisionPreservesEveryVersionAndReviewerBoundary(t *testing.T
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := db.AutoMigrate(&model.ComplianceDecision{}, &model.DecisionRevision{}, &model.AuditLog{}); err != nil {
+	if err := db.AutoMigrate(&model.ComplianceDecision{}, &model.DecisionRevision{}, &model.AuditLog{}, &model.PermitRule{}); err != nil {
 		t.Fatalf("migrate database: %v", err)
 	}
 	repo := repository.NewComplianceDecisionRepository(db)
