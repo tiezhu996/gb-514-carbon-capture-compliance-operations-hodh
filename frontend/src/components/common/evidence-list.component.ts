@@ -14,6 +14,7 @@ import type { DecisionRevision, DomainRecord } from '../../types/domain';
         <p>{{ item.evidence || '尚未附加证据说明' }}</p>
         <small *ngIf="latest(item) as revision">v{{ revision.version }} · {{ revision.actor }} · {{ revision.requestId }}</small>
         <small *ngIf="!latest(item)">当前版本 v{{ item.version }}</small>
+        <small *ngIf="permitRef(item)" class="permit-ref">引用许可 {{ permitRef(item) }}</small>
       </article>
     </div>
     <ng-template #empty><div class="empty">暂无业务证据</div></ng-template>
@@ -23,5 +24,14 @@ export class EvidenceListComponent {
   @Input() records: DomainRecord[] = [];
   latest(item: DomainRecord): DecisionRevision | null {
     return item.revisions?.[item.revisions.length - 1] || null;
+  }
+  // Returns the pinned 许可规则 reference. Decisions snapshot the active rule's
+  // code/version at creation and keep it after retirement; the revision value
+  // wins so the latest immutable version context is shown.
+  permitRef(item: DomainRecord): string {
+    const revision = this.latest(item);
+    const code = revision?.permitRuleCode || item.permitRuleCode;
+    const version = revision?.permitRuleVersion ?? item.permitRuleVersion;
+    return code ? `${code} v${version || 0}` : '';
   }
 }

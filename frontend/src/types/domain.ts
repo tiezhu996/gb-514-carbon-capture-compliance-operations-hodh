@@ -15,6 +15,8 @@ export interface DomainRecord {
   effectiveAt: string;
   evidence: string;
   relatedCode: string;
+  permitRuleCode?: string;
+  permitRuleVersion?: number;
   createdAt: string;
   updatedAt: string;
   revisions?: DecisionRevision[];
@@ -27,9 +29,26 @@ export interface DecisionRevision {
   state: string;
   evidence: string;
   reason: string;
+  permitRuleCode?: string;
+  permitRuleVersion?: number;
   actor: string;
   requestId: string;
   createdAt: string;
+}
+
+export interface RetirementBlocker {
+  code: string;
+  decisionCode?: string;
+  reason: string;
+}
+
+export interface RetirementCheck {
+  permitRuleCode: string;
+  relatedCode: string;
+  allowed: boolean;
+  deviceCode?: string;
+  sampleCode?: string;
+  blockers: RetirementBlocker[];
 }
 
 export interface PageMeta { page: number; pageSize: number; total: number }

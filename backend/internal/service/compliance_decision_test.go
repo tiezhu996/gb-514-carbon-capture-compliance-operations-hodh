@@ -19,14 +19,33 @@ func TestComplianceDecisionPreservesEveryVersionAndReviewerBoundary(t *testing.T
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := db.AutoMigrate(&model.ComplianceDecision{}, &model.DecisionRevision{}, &model.AuditLog{}); err != nil {
+	if err := db.AutoMigrate(&model.ComplianceDecision{}, &model.DecisionRevision{}, &model.AuditLog{},
+		&model.PermitRule{}, &model.CaptureUnit{}, &model.EmissionSample{}); err != nil {
 		t.Fatalf("migrate database: %v", err)
 	}
-	repo := repository.NewComplianceDecisionRepository(db)
+	decisionRepo := repository.NewComplianceDecisionRepository(db)
+	coordinator := repository.NewRetirementCoordinator(db)
 	security := NewSecurityService(repository.NewSecurityRepository(db), config.Config{})
-	svc := NewComplianceDecisionService(repo, security)
+	svc := NewComplianceDecisionService(decisionRepo, coordinator, security, NewDeviceLocker())
+	ruleSvc := NewPermitRuleService(repository.NewPermitRuleRepository(db), security)
 	ctx := context.Background()
 	now := time.Now().UTC()
+
+	activeRule, err := ruleSvc.Create(ctx, dto.CreatePermitRule{
+		Code: "PR-TEST", Name: "Stack permit rule", Description: "active threshold for test train",
+		Facility: "Capture train A", Owner: "operator", Category: "emissions", RiskLevel: "high",
+		MetricValue: 40, MetricUnit: "ppm", EffectiveAt: now,
+		Evidence: "permit issued", RelatedCode: "PR-TEST",
+	}, "admin", "request-rule-create")
+	if err != nil {
+		t.Fatalf("create draft rule: %v", err)
+	}
+	activeRule, err = ruleSvc.Transition(ctx, activeRule.ID, dto.TransitionRequest{
+		Status: "active", ExpectedVersion: activeRule.Version, Reason: "permit enters force for decision tests",
+	}, "admin", "request-rule-active")
+	if err != nil {
+		t.Fatalf("activate rule: %v", err)
+	}
 
 	created, err := svc.Create(ctx, dto.CreateComplianceDecision{
 		Code: "CD-TEST", Name: "Stack compliance decision", Description: "initial assessment",
@@ -39,6 +58,12 @@ func TestComplianceDecisionPreservesEveryVersionAndReviewerBoundary(t *testing.T
 	}
 	if created.Version != 1 || len(created.Revisions) != 1 || created.Revisions[0].RequestID != "request-create" {
 		t.Fatalf("initial revision context missing: %+v", created.Revisions)
+	}
+	if created.PermitRuleCode != "PR-TEST" || created.PermitRuleVersion != activeRule.Version {
+		t.Fatalf("decision should snapshot active permit rule, got code=%q version=%d", created.PermitRuleCode, created.PermitRuleVersion)
+	}
+	if created.Revisions[0].PermitRuleCode != "PR-TEST" || created.Revisions[0].PermitRuleVersion != activeRule.Version {
+		t.Fatalf("revision snapshot missing: %+v", created.Revisions[0])
 	}
 
 	updated, err := svc.Update(ctx, created.ID, dto.UpdateComplianceDecision{
@@ -82,6 +107,10 @@ func TestComplianceDecisionPreservesEveryVersionAndReviewerBoundary(t *testing.T
 		accepted.Revisions[3].Actor != "reviewer" || accepted.Revisions[3].RequestID != "request-accepted" ||
 		accepted.Revisions[0].RequestID != "request-create" {
 		t.Fatalf("immutable decision history is incomplete: %+v", accepted.Revisions)
+	}
+	if accepted.PermitRuleCode != "PR-TEST" || accepted.PermitRuleVersion != activeRule.Version ||
+		accepted.Revisions[3].PermitRuleCode != "PR-TEST" {
+		t.Fatalf("accepted decision must keep referencing the original permit version: %+v", accepted)
 	}
 
 	_, err = svc.Update(ctx, created.ID, dto.UpdateComplianceDecision{ExpectedVersion: accepted.Version}, "admin", "request-late-update")

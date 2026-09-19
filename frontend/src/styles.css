@@ -35,6 +35,20 @@ td small { display: block; color: #7d8d97; margin-top: 4px; }
 .status { display: inline-flex; align-items: center; border-radius: 3px; padding: 4px 8px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
 .status--success { color: #176c55; background: #dff3ec; }.status--warning { color: #8a5a08; background: #fff1ce; }.status--danger { color: #9d2c37; background: #fde4e6; }.status--neutral { color: #506572; background: #e9eff2; }
 .table-action, .link-button { border: 0; background: none; color: #167c66; cursor: pointer; font-weight: 650; padding: 5px; }
+.table-action.retire-action { color: #9d2c37; }
+.permit-ref { color: #285c77 !important; font-weight: 650; }
+.retire-modal { width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow-y: auto; }
+.retire-hint { color: #526473; font-size: 13px; line-height: 1.6; }
+.retire-loading { padding: 18px; color: #176c55; font-weight: 650; }
+.retire-ok { background: #eef7f3; border-left: 4px solid #2a9d78; padding: 12px 14px; }
+.retire-ok ul { margin: 8px 0 0; padding-left: 18px; color: #3f535f; font-size: 13px; line-height: 1.7; }
+.retire-reason { display: grid; gap: 6px; margin-top: 12px; font-size: 13px; color: #3f535f; }
+.retire-blocked { background: #fdf1f2; border-left: 4px solid #c84855; padding: 12px 14px; }
+.blocker-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
+.blocker-list li { background: white; border: 1px solid #ecd3d6; padding: 9px 11px; }
+.blocker-list li p { margin: 4px 0 0; color: #5d3c40; font-size: 13px; line-height: 1.5; }
+.blocker-code { display: inline-block; font-size: 11px; font-weight: 750; color: #922b34; background: #fde4e6; padding: 2px 8px; border-radius: 10px; }
+.blocker-decision { margin-left: 8px; font-size: 12px; color: #285c77; font-weight: 650; }
 .muted, .empty { color: #82919a; }.empty { text-align: center; padding: 40px; }
 .loading { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(255,255,255,.72); color: #176c55; font-weight: 700; }
 .alert { padding: 12px; margin-bottom: 12px; color: #922b34; background: #fde8ea; border-left: 4px solid #c84855; }

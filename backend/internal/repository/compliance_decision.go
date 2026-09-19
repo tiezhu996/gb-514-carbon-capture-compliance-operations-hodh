@@ -12,6 +12,7 @@ import (
 type ComplianceDecisionRepository interface {
 	List(context.Context, dto.PageQuery) (Page[model.ComplianceDecision], error)
 	Get(context.Context, uint) (model.ComplianceDecision, error)
+	ListInFlightByRelatedCode(context.Context, string) ([]model.ComplianceDecision, error)
 	CreateWithRevision(context.Context, *model.ComplianceDecision, *model.DecisionRevision) error
 	UpdateWithRevision(context.Context, uint, uint, *model.ComplianceDecision, *model.DecisionRevision) error
 	Delete(context.Context, uint) error
@@ -56,6 +57,13 @@ func (r *complianceDecisionRepository) Get(ctx context.Context, id uint) (model.
 		return db.Order("version ASC")
 	}).First(&item, id).Error
 	return item, err
+}
+func (r *complianceDecisionRepository) ListInFlightByRelatedCode(ctx context.Context, relatedCode string) ([]model.ComplianceDecision, error) {
+	items := make([]model.ComplianceDecision, 0)
+	err := r.db.WithContext(ctx).
+		Where("related_code = ? AND status IN ?", relatedCode, []string{"draft", "review"}).
+		Order("updated_at DESC, id DESC").Find(&items).Error
+	return items, err
 }
 func (r *complianceDecisionRepository) CreateWithRevision(ctx context.Context, item *model.ComplianceDecision, revision *model.DecisionRevision) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

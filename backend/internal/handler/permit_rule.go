@@ -10,10 +10,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type PermitRuleHandler struct{ service service.PermitRuleService }
+type PermitRuleHandler struct {
+	service    service.PermitRuleService
+	retirement service.RuleRetirementService
+}
 
-func NewPermitRuleHandler(s service.PermitRuleService) *PermitRuleHandler {
-	return &PermitRuleHandler{service: s}
+func NewPermitRuleHandler(s service.PermitRuleService, retirement service.RuleRetirementService) *PermitRuleHandler {
+	return &PermitRuleHandler{service: s, retirement: retirement}
 }
 
 func (h *PermitRuleHandler) Register(group *gin.RouterGroup) {
@@ -23,6 +26,8 @@ func (h *PermitRuleHandler) Register(group *gin.RouterGroup) {
 	resource.POST("", middleware.RequireMinimumRole("operator"), h.create)
 	resource.PUT("/:id", middleware.RequireMinimumRole("operator"), h.update)
 	resource.POST("/:id/transition", middleware.RequireMinimumRole("operator"), h.transition)
+	resource.GET("/:id/retirement-check", h.retirementCheck)
+	resource.POST("/:id/retire", middleware.RequireRoles("admin"), h.retire)
 	resource.DELETE("/:id", middleware.RequireRoles("admin"), h.remove)
 }
 
@@ -94,6 +99,44 @@ func (h *PermitRuleHandler) transition(c *gin.Context) {
 	item, err := h.service.Transition(c.Request.Context(), id, input, actorFromContext(c), requestIDFromContext(c))
 	if err != nil {
 		handleError(c, err)
+		return
+	}
+	util.OK(c, item)
+}
+
+func (h *PermitRuleHandler) retirementCheck(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	check, err := h.retirement.Precheck(c.Request.Context(), id)
+	if err != nil {
+		handleError(c, err)
+		return
+	}
+	util.OK(c, check)
+}
+
+func (h *PermitRuleHandler) retire(c *gin.Context) {
+	// Defense in depth: RequireRoles("admin") already guards the route, but the
+	// 无阻断时只允许管理员作废 rule is enforced in the service as well.
+	if roleFromContext(c) != "admin" {
+		util.Fail(c, http.StatusForbidden, "forbidden", "admin role is required")
+		return
+	}
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	var input dto.RetirePermitRule
+	if err := c.ShouldBindJSON(&input); err != nil {
+		util.Fail(c, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	item, err := h.retirement.Retire(c.Request.Context(), id, input.ExpectedVersion,
+		roleFromContext(c), actorFromContext(c), requestIDFromContext(c), input.Reason)
+	if err != nil {
+		handleRetirementError(c, err)
 		return
 	}
 	util.OK(c, item)

@@ -12,6 +12,7 @@ import (
 type CaptureUnitRepository interface {
 	List(context.Context, dto.PageQuery) (Page[model.CaptureUnit], error)
 	Get(context.Context, uint) (model.CaptureUnit, error)
+	FindByRelatedCode(context.Context, string) (model.CaptureUnit, error)
 	Create(context.Context, *model.CaptureUnit) error
 	Update(context.Context, uint, uint, *model.CaptureUnit) error
 	Delete(context.Context, uint) error
@@ -31,6 +32,11 @@ func (r *captureUnitRepository) List(ctx context.Context, q dto.PageQuery) (Page
 }
 func (r *captureUnitRepository) Get(ctx context.Context, id uint) (model.CaptureUnit, error) {
 	return r.store.Get(ctx, id)
+}
+func (r *captureUnitRepository) FindByRelatedCode(ctx context.Context, relatedCode string) (model.CaptureUnit, error) {
+	var item model.CaptureUnit
+	err := r.store.db.WithContext(ctx).Where("related_code = ?", relatedCode).Order("updated_at DESC, id DESC").First(&item).Error
+	return item, err
 }
 func (r *captureUnitRepository) Create(ctx context.Context, item *model.CaptureUnit) error {
 	return r.store.Create(ctx, item)

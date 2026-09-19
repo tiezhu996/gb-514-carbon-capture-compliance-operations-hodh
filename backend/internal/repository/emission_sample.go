@@ -12,6 +12,7 @@ import (
 type EmissionSampleRepository interface {
 	List(context.Context, dto.PageQuery) (Page[model.EmissionSample], error)
 	Get(context.Context, uint) (model.EmissionSample, error)
+	FindLatestVerifiedByRelatedCode(context.Context, string) (model.EmissionSample, error)
 	Create(context.Context, *model.EmissionSample) error
 	Update(context.Context, uint, uint, *model.EmissionSample) error
 	Delete(context.Context, uint) error
@@ -31,6 +32,12 @@ func (r *emissionSampleRepository) List(ctx context.Context, q dto.PageQuery) (P
 }
 func (r *emissionSampleRepository) Get(ctx context.Context, id uint) (model.EmissionSample, error) {
 	return r.store.Get(ctx, id)
+}
+func (r *emissionSampleRepository) FindLatestVerifiedByRelatedCode(ctx context.Context, relatedCode string) (model.EmissionSample, error) {
+	var item model.EmissionSample
+	err := r.store.db.WithContext(ctx).Where("related_code = ? AND status = ?", relatedCode, "verified").
+		Order("effective_at DESC, updated_at DESC, id DESC").First(&item).Error
+	return item, err
 }
 func (r *emissionSampleRepository) Create(ctx context.Context, item *model.EmissionSample) error {
 	return r.store.Create(ctx, item)

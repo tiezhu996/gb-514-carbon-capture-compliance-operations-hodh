@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/blueship581/carbon-capture-compliance-operations/backend/internal/dto"
 	"github.com/blueship581/carbon-capture-compliance-operations/backend/internal/model"
 	"github.com/blueship581/carbon-capture-compliance-operations/backend/internal/repository"
+	"gorm.io/gorm"
 )
 
 type ComplianceDecisionService interface {
@@ -23,12 +25,14 @@ type ComplianceDecisionService interface {
 }
 
 type complianceDecisionService struct {
-	repository repository.ComplianceDecisionRepository
-	security   SecurityService
+	repository  repository.ComplianceDecisionRepository
+	coordinator repository.RetirementCoordinator
+	security    SecurityService
+	locker      DeviceLocker
 }
 
-func NewComplianceDecisionService(repo repository.ComplianceDecisionRepository, security SecurityService) ComplianceDecisionService {
-	return &complianceDecisionService{repository: repo, security: security}
+func NewComplianceDecisionService(repo repository.ComplianceDecisionRepository, coordinator repository.RetirementCoordinator, security SecurityService, locker DeviceLocker) ComplianceDecisionService {
+	return &complianceDecisionService{repository: repo, coordinator: coordinator, security: security, locker: locker}
 }
 
 func (s *complianceDecisionService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.ComplianceDecision], error) {
@@ -54,11 +58,48 @@ func (s *complianceDecisionService) Create(ctx context.Context, input dto.Create
 		EffectiveAt: input.EffectiveAt.UTC(), Evidence: strings.TrimSpace(input.Evidence),
 		RelatedCode: strings.ToUpper(strings.TrimSpace(input.RelatedCode)),
 	}
-	revision := newDecisionRevision(item.Version, item.Status, item.Evidence, "created compliance decision", actor, requestID)
-	if err := s.repository.CreateWithRevision(ctx, &item, revision); err != nil {
-		return model.ComplianceDecision{}, fmt.Errorf("create 合规决定: %w", err)
+	deviceKey := item.RelatedCode
+	revision := newDecisionRevision(item.Version, item.Status, item.Evidence, "created compliance decision", actor, requestID, "", 0)
+	if deviceKey == "" {
+		// Legacy decisions without a device binding keep the original path and
+		// carry an empty permit snapshot.
+		if err := s.repository.CreateWithRevision(ctx, &item, revision); err != nil {
+			return model.ComplianceDecision{}, fmt.Errorf("create 合规决定: %w", err)
+		}
+		_ = s.security.Audit(ctx, actor, requestID, "create", "ComplianceDecision", item.ID, "", item.Status, "created 合规决定")
+		return s.repository.Get(ctx, item.ID)
 	}
-	_ = s.security.Audit(ctx, actor, requestID, "create", "ComplianceDecision", item.ID, "", item.Status, "created 合规决定")
+
+	// Device-scoped decisions resolve the active permit rule and snapshot its
+	// code/version inside the same locked transaction as rule retirement, so a
+	// concurrent retire and submit cannot both commit.
+	err := s.locker.WithLock(ctx, deviceKey, func() error {
+		return s.coordinator.Run(ctx, deviceKey, func(tx repository.DeviceTx) error {
+			active, ruleErr := tx.ActivePermitRule(ctx, deviceKey, true)
+			if ruleErr != nil {
+				if errors.Is(ruleErr, gorm.ErrRecordNotFound) {
+					return ErrNoActivePermitRule
+				}
+				return fmt.Errorf("resolve active 许可规则 for %s: %w", deviceKey, ruleErr)
+			}
+			item.PermitRuleCode = active.Code
+			item.PermitRuleVersion = active.Version
+			revision.PermitRuleCode = active.Code
+			revision.PermitRuleVersion = active.Version
+			if createErr := tx.CreateDecision(ctx, &item, revision); createErr != nil {
+				return fmt.Errorf("create 合规决定: %w", createErr)
+			}
+			return tx.AppendAudit(ctx, &model.AuditLog{
+				Actor: actor, RequestID: requestID, Action: "create", EntityType: "ComplianceDecision",
+				EntityID: item.ID, BeforeState: "", AfterState: item.Status,
+				Detail:    fmt.Sprintf("created 合规决定 referencing %s v%d", active.Code, active.Version),
+				CreatedAt: time.Now().UTC(),
+			})
+		})
+	})
+	if err != nil {
+		return model.ComplianceDecision{}, err
+	}
 	return s.repository.Get(ctx, item.ID)
 }
 
@@ -83,10 +124,10 @@ func (s *complianceDecisionService) Update(ctx context.Context, id uint, input d
 	current.MetricUnit = strings.TrimSpace(input.MetricUnit)
 	current.EffectiveAt = input.EffectiveAt.UTC()
 	current.Evidence = strings.TrimSpace(input.Evidence)
-	current.RelatedCode = strings.ToUpper(strings.TrimSpace(input.RelatedCode))
+	current.RelatedCode = strings.ToUpper(strings.TrimSpace(current.RelatedCode))
 	current.Version = input.ExpectedVersion + 1
 	current.UpdatedAt = time.Now().UTC()
-	revision := newDecisionRevision(current.Version, current.Status, current.Evidence, "updated draft decision fields", actor, requestID)
+	revision := newDecisionRevision(current.Version, current.Status, current.Evidence, "updated draft decision fields", actor, requestID, current.PermitRuleCode, current.PermitRuleVersion)
 	if err := s.repository.UpdateWithRevision(ctx, id, input.ExpectedVersion, &current, revision); err != nil {
 		return model.ComplianceDecision{}, fmt.Errorf("update 合规决定: %w", err)
 	}
@@ -111,7 +152,7 @@ func (s *complianceDecisionService) Transition(ctx context.Context, id uint, inp
 	current.Status = target
 	current.Version = input.ExpectedVersion + 1
 	current.UpdatedAt = time.Now().UTC()
-	revision := newDecisionRevision(current.Version, target, current.Evidence, input.Reason, actor, requestID)
+	revision := newDecisionRevision(current.Version, target, current.Evidence, input.Reason, actor, requestID, current.PermitRuleCode, current.PermitRuleVersion)
 	if err := s.repository.UpdateWithRevision(ctx, id, input.ExpectedVersion, &current, revision); err != nil {
 		return model.ComplianceDecision{}, fmt.Errorf("transition 合规决定: %w", err)
 	}
@@ -146,10 +187,11 @@ func validateComplianceDecisionBusinessFields(code, name, facility, owner string
 	return nil
 }
 
-func newDecisionRevision(version uint, state, evidence, reason, actor, requestID string) *model.DecisionRevision {
+func newDecisionRevision(version uint, state, evidence, reason, actor, requestID, permitRuleCode string, permitRuleVersion uint) *model.DecisionRevision {
 	return &model.DecisionRevision{
 		Version: version, State: strings.TrimSpace(state), Evidence: strings.TrimSpace(evidence),
 		Reason: strings.TrimSpace(reason), Actor: strings.TrimSpace(actor),
+		PermitRuleCode: strings.TrimSpace(permitRuleCode), PermitRuleVersion: permitRuleVersion,
 		RequestID: strings.TrimSpace(requestID), CreatedAt: time.Now().UTC(),
 	}
 }

@@ -147,6 +147,11 @@ func seedCaptureUnit(ctx context.Context, db *gorm.DB) error {
 			Description: "用于启动验证和主要流程演示的捕集装置记录"}, Facility: "碳捕集装置合规运行区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
 			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-514-03"},
+
+		{BaseModel: model.BaseModel{Code: "CU-004", Name: "捕集装置示例四", Status: "running", Version: 1,
+			Description: "无在途合规决定，用于演示许可规则作废核验通过"}, Facility: "碳捕集装置合规运行区域4", Owner: "运行二组",
+			Category: "常规", RiskLevel: "low", MetricValue: 18.0, MetricUnit: "ppm",
+			EffectiveAt: now.Add(9 * time.Hour), Evidence: "装置与许可规则 PR-004 已核对", RelatedCode: "REL-514-04"},
 	}
 	return db.WithContext(ctx).Create(&items).Error
 }
@@ -173,6 +178,11 @@ func seedPermitRule(ctx context.Context, db *gorm.DB) error {
 			Description: "用于启动验证和主要流程演示的许可规则记录"}, Facility: "碳捕集装置合规运行区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
 			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-514-03"},
+
+		{BaseModel: model.BaseModel{Code: "PR-004", Name: "许可规则示例四", Status: "active", Version: 2,
+			Description: "已完成装置与已核验样本核对、无在途决定，可演示按装置核验后作废"}, Facility: "碳捕集装置合规运行区域4", Owner: "运行二组",
+			Category: "常规", RiskLevel: "low", MetricValue: 18.0, MetricUnit: "ppm",
+			EffectiveAt: now.Add(9 * time.Hour), Evidence: "排放样本 ES-004 已核验，装置 CU-004 在役", RelatedCode: "REL-514-04"},
 	}
 	return db.WithContext(ctx).Create(&items).Error
 }
@@ -199,6 +209,11 @@ func seedEmissionSample(ctx context.Context, db *gorm.DB) error {
 			Description: "用于启动验证和主要流程演示的排放样本记录"}, Facility: "碳捕集装置合规运行区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
 			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-514-03"},
+
+		{BaseModel: model.BaseModel{Code: "ES-004", Name: "排放样本示例四", Status: "verified", Version: 1,
+			Description: "装置 CU-004 的最新已核验样本，支撑 PR-004 作废核验"}, Facility: "碳捕集装置合规运行区域4", Owner: "运行二组",
+			Category: "常规", RiskLevel: "low", MetricValue: 17.6, MetricUnit: "ppm",
+			EffectiveAt: now.Add(9 * time.Hour), Evidence: "实验室已核验，排放低于许可阈值", RelatedCode: "REL-514-04"},
 	}
 	return db.WithContext(ctx).Create(&items).Error
 }
@@ -230,11 +245,29 @@ func seedComplianceDecision(ctx context.Context, db *gorm.DB) error {
 		if err := tx.Omit("Revisions").Create(&items).Error; err != nil {
 			return err
 		}
+		// Seeded decisions keep referencing the original permit version they
+		// were assessed against, mirroring the snapshot created at runtime.
+		snapshot := map[string]struct {
+			Code    string
+			Version uint
+		}{
+			"REL-514-01": {Code: "", Version: 0}, // PR-001 is still draft
+			"REL-514-02": {Code: "PR-002", Version: 1},
+			"REL-514-03": {Code: "", Version: 0}, // PR-003 is already superseded
+		}
 		revisions := make([]model.DecisionRevision, 0, len(items))
 		for _, item := range items {
+			ref := snapshot[item.RelatedCode]
+			item.PermitRuleCode = ref.Code
+			item.PermitRuleVersion = ref.Version
+			if err := tx.Model(&model.ComplianceDecision{}).Where("id = ?", item.ID).
+				Updates(map[string]any{"permit_rule_code": ref.Code, "permit_rule_version": ref.Version}).Error; err != nil {
+				return err
+			}
 			revisions = append(revisions, model.DecisionRevision{
 				ComplianceDecisionID: item.ID, Version: item.Version, State: item.Status,
 				Evidence: item.Evidence, Reason: "seeded demonstration decision",
+				PermitRuleCode: ref.Code, PermitRuleVersion: ref.Version,
 				Actor: "system", RequestID: "seed-" + item.Code, CreatedAt: now,
 			})
 		}

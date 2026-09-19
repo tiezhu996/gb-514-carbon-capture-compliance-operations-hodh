@@ -33,6 +33,7 @@ docker compose down -v --remove-orphans
 
 - JWT 登录和 viewer/operator/reviewer/admin 四级 RBAC；写操作至少需要 operator，删除仅 admin，审计至少 reviewer。
 - 合规决定每次创建、草稿修改和状态迁移都会事务追加不可变版本，保存状态、证据、操作者和 request ID；进入 review 后业务字段锁定，accepted/escalated 仅 reviewer 或 admin 可执行。
+- 许可规则作废（retired）必须走专用按装置核验流程：先核验同一 `relatedCode` 的捕集装置存在且设施一致、存在最新已核验（verified）排放样本且设施一致，且无草稿（draft）或复核中（review）的关联合规决定；存在在途决定时拒绝并返回每个决定编号与阻断原因。样本缺失、装置不一致或读取失败同样拒绝。无阻断时仅 admin 可作废；旧规则以 retired 保留历史，已接受决定通过创建时快照的 `permitRuleCode/permitRuleVersion` 继续引用原版本。并发作废与新决定提交在同一装置锁事务内串行，只有一方成功，失败整体回滚不留半更新。
 - 所有状态变化使用乐观锁并写入不可覆盖的审计日志。
 - 请求 ID、结构化日志、全局错误映射和 Redis 分布式限流。
 - 提供脱敏运行配置、当前会话、审计汇总和单实体审计历史接口。
@@ -149,6 +150,15 @@ token=$(curl -sS -X POST http://127.0.0.1:19514/api/auth/login \
 curl -sS http://127.0.0.1:19514/api/overview \
   -H "Authorization: Bearer $token"
 ```
+
+## 许可规则作废核验
+
+| 接口 | 方法/角色 | 行为 |
+|---|---|---|
+| `/api/rules/:id/retirement-check` | GET，登录即可 | 只读按装置核验，返回 `allowed` 及全部 `blockers`（含决定编号与原因） |
+| `/api/rules/:id/retire` | POST，仅 admin | 事务内重新核验并作废；阻断返回 422 `retirement_blocked` + `details`，版本冲突返回 409 |
+
+阻断码：`rule_state`、`device_missing`、`device_mismatch`、`sample_missing`、`in_flight_decision`（带 `decisionCode`）；装置/样本/决定的数据库读取失败返回 5xx 而不是放行。`retired` 为终态，不能再经通用 `/transition` 迁移；草稿规则不绑定装置也无法作废。
 
 ## License
 

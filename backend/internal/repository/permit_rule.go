@@ -12,6 +12,7 @@ import (
 type PermitRuleRepository interface {
 	List(context.Context, dto.PageQuery) (Page[model.PermitRule], error)
 	Get(context.Context, uint) (model.PermitRule, error)
+	FindActiveByRelatedCode(context.Context, string) (model.PermitRule, error)
 	Create(context.Context, *model.PermitRule) error
 	Update(context.Context, uint, uint, *model.PermitRule) error
 	Delete(context.Context, uint) error
@@ -31,6 +32,12 @@ func (r *permitRuleRepository) List(ctx context.Context, q dto.PageQuery) (Page[
 }
 func (r *permitRuleRepository) Get(ctx context.Context, id uint) (model.PermitRule, error) {
 	return r.store.Get(ctx, id)
+}
+func (r *permitRuleRepository) FindActiveByRelatedCode(ctx context.Context, relatedCode string) (model.PermitRule, error) {
+	var item model.PermitRule
+	err := r.store.db.WithContext(ctx).Where("related_code = ? AND status = ?", relatedCode, "active").
+		Order("effective_at DESC, updated_at DESC, id DESC").First(&item).Error
+	return item, err
 }
 func (r *permitRuleRepository) Create(ctx context.Context, item *model.PermitRule) error {
 	return r.store.Create(ctx, item)

@@ -95,6 +95,9 @@ func (s *permitRuleService) Transition(ctx context.Context, id uint, input dto.T
 		return model.PermitRule{}, err
 	}
 	target := strings.TrimSpace(input.Status)
+	if target == string(constants.PermitRuleStateRetired) {
+		return model.PermitRule{}, ErrRetiredTransition
+	}
 	if !constants.CanTransition(constants.PermitRuleTransitions, current.Status, target) {
 		return model.PermitRule{}, fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, current.Status, target)
 	}
